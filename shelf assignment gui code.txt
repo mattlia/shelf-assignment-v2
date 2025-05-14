@@ -1,0 +1,953 @@
+import pandas as pd
+import tkinter as tk
+from tkinter import ttk, messagebox
+import os
+
+# File paths
+FAMILY_FILE = r"C:\Users\User\OneDrive - ensonmarket.com\shelf assignment\family information.xlsx"
+OUTPUT_FILE = r"C:\Users\User\OneDrive - ensonmarket.com\shelf assignment\Shelf_Assignment_Reversed_Output.xlsx"
+
+class ShelfModel:
+    def __init__(self):
+        self.df = None
+        self.families = []
+        self.categories = {}  # Maps family to list of categories
+        self.load_data()
+
+    def load_data(self):
+        """Load data from the Excel files."""
+        try:
+            # Read the output file
+            if not os.path.exists(OUTPUT_FILE):
+                raise FileNotFoundError(f"Output file not found: {OUTPUT_FILE}")
+            self.df = pd.read_excel(OUTPUT_FILE)
+            print(f"Read output file. Rows: {len(self.df)}")
+            print(f"Columns in output file: {list(self.df.columns)}")
+            
+            # Read family information to get families and categories
+            xls = pd.ExcelFile(FAMILY_FILE)
+            for sheet_name in xls.sheet_names:
+                df = pd.read_excel(FAMILY_FILE, sheet_name=sheet_name)
+                print(f"\nReading sheet: {sheet_name}")
+                print(f"First few rows of the sheet:\n{df.head()}")
+                
+                # Read family name from cell A2 (row 2 in Excel, index 0 in pandas)
+                family_row = 0
+                family = str(df.iloc[family_row, 0]) if not pd.isna(df.iloc[family_row, 0]) else ""
+                print(f"Family in cell A2 (row 2, index {family_row}): {family}")
+                
+                if family:
+                    category_row = family_row
+                    categories = df.iloc[category_row, 1:].dropna().tolist()
+                    print(f"Raw categories in row 2 (B2 onward, index {category_row}): {categories}")
+                    categories = [str(cat) for cat in categories]
+                    print(f"Categories after converting to strings: {categories}")
+                    
+                    self.families.append(family)
+                    self.categories[family] = categories
+            print(f"\nFamilies loaded: {self.families}")
+            print(f"Categories loaded: {self.categories}")
+            
+            # Ensure Family and Category columns exist
+            if 'Family' not in self.df.columns:
+                self.df['Family'] = ""
+            if 'Category' not in self.df.columns:
+                self.df['Category'] = ""
+        except Exception as e:
+            print(f"Error loading data: {str(e)}")
+            raise
+
+    def save_data(self):
+        """Save the updated data back to the Excel file."""
+        try:
+            self.df.to_excel(OUTPUT_FILE, index=False)
+            print(f"Updated data saved to: {OUTPUT_FILE}")
+            return True, f"Data saved successfully to {OUTPUT_FILE}"
+        except Exception as e:
+            print(f"Error saving data: {str(e)}")
+            return False, f"Error saving data: {str(e)}"
+
+    def apply_selection(self, selected_cells, section, aisle, side, family, category):
+        """Apply the selected Family and Category to the selected shelves in the DataFrame."""
+        if not section or not aisle or not side or not family or not category:
+            return False, "Please select all dropdown values."
+        
+        if not selected_cells:
+            return False, "Please select at least one shelf in the grid."
+        
+        updated_rows = 0
+        for level, shelf in selected_cells:
+            mask = (
+                (self.df['Section'] == section) &
+                (self.df['Aisle'] == int(aisle)) &
+                (self.df['Side'] == int(side)) &
+                (self.df['Level'] == level) &
+                (self.df['Shelf'] == shelf)
+            )
+            row_idx = self.df.index[mask]
+            if not row_idx.empty:
+                row_idx = row_idx[0]
+                self.df.at[row_idx, 'Family'] = family
+                self.df.at[row_idx, 'Category'] = category
+                updated_rows += 1
+                print(f"Updated row {row_idx}: Family={family}, Category={category}")
+        print(f"Applied Family: {family}, Category: {category} to {updated_rows} shelves")
+        return True, f"Family and Category values applied to {updated_rows} shelves."
+
+    def update_cell(self, row_id, column_name, value):
+        """Update a specific cell in the DataFrame."""
+        self.df.at[int(row_id), column_name] = value
+        if column_name == "Family":
+            self.df.at[int(row_id), "Category"] = ""  # Reset Category if Family changes
+        return list(self.df.iloc[int(row_id)])
+
+    def get_filtered_data(self, section, aisle, side):
+        """Get filtered data for the selected Section, Aisle, and Side."""
+        if not section or not aisle or not side:
+            print(f"Cannot filter data: Section='{section}', Aisle='{aisle}', Side='{side}'")
+            return None
+        filtered_df = self.df[
+            (self.df['Section'] == section) &
+            (self.df['Aisle'] == int(aisle)) &
+            (self.df['Side'] == int(side))
+        ]
+        if filtered_df.empty:
+            print(f"No data found for Section='{section}', Aisle='{aisle}', Side='{side}'")
+            return None
+        return filtered_df
+
+    def get_unique_values(self, column):
+        """Get unique values for a given column in the DataFrame."""
+        return sorted(self.df[column].unique().tolist())
+
+class ShelfView:
+    def __init__(self, root, controller):
+        self.root = root
+        self.controller = controller
+        self.root.title("Shelf Assignment Editor")
+        self.root.geometry("1200x800")
+        
+        # Apply a modern theme and custom styles
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
+        print("Applying styles with 'clam' theme")
+        self.apply_styles()
+        
+        # Create tabbed interface
+        print("Creating ttk.Notebook for tabbed interface")
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Create tabs
+        self.table_tab = ttk.Frame(self.notebook, style="Custom.TFrame")
+        self.shelf_tab = ttk.Frame(self.notebook, style="Custom.TFrame")
+        self.notebook.add(self.table_tab, text="Table View")
+        self.notebook.add(self.shelf_tab, text="Shelf View")
+        print("Tabs created: Table View, Shelf View")
+        
+        # Bind tab change event to refresh Table View when selected
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+        
+        # Initialize tab views
+        self.create_table_tab()
+        self.create_shelf_tab()
+        print("ShelfView initialization completed")
+
+    def apply_styles(self):
+        """Apply custom styles for a more artistic and readable GUI."""
+        self.large_font = ('Helvetica', 14)
+        self.dropdown_font = ('Helvetica', 16)
+        self.button_font = ('Helvetica', 16, 'bold')
+        self.shelf_text_font_base = 8
+        self.label_font_base = 10
+        
+        self.style.configure("Custom.TFrame", background="#e6ecf0")
+        self.style.configure("Treeview",
+                             font=self.large_font,
+                             rowheight=40,
+                             background="#f0f4f8",
+                             foreground="#333333",
+                             fieldbackground="#f0f4f8")
+        self.style.configure("Treeview.Heading",
+                             font=('Helvetica', 16, 'bold'),
+                             background="#4a90e2",
+                             foreground="#ffffff")
+        self.style.configure("TButton",
+                             font=self.button_font,
+                             padding=10,
+                             background="#4a90e2",
+                             foreground="#ffffff")
+        self.style.configure("TCombobox",
+                             font=self.large_font,
+                             background="#ffffff",
+                             foreground="#333333",
+                             padding=(10, 5, 15, 5))
+        self.style.map("TCombobox",
+                       fieldbackground=[('readonly', '#ffffff')],
+                       selectbackground=[('readonly', '#ffffff')],
+                       selectforeground=[('readonly', '#333333')])
+        self.style.layout("TCombobox", [
+            ('Combobox.field', {'sticky': 'nswe', 'children': [
+                ('Combobox.downarrow', {'side': 'right', 'sticky': 'ns'}),
+                ('Combobox.padding', {'sticky': 'nswe', 'children': [
+                    ('Combobox.textarea', {'sticky': 'nswe'})
+                ]}),
+            ]}),
+        ])
+        self.style.configure("TCombobox.Listbox", font=self.dropdown_font)
+
+    def on_tab_changed(self, event):
+        """Handle tab change events to refresh the Table View when selected."""
+        selected_tab = self.notebook.tab(self.notebook.select(), "text")
+        print(f"Tab changed to: {selected_tab}")
+        if selected_tab == "Table View":
+            self.update_treeview()
+        elif selected_tab == "Shelf View":
+            self.controller.update_shelf_view()
+
+    def create_table_tab(self):
+        """Create the table view tab."""
+        frame = ttk.Frame(self.table_tab, style="Custom.TFrame")
+        frame.pack(padx=20, pady=20, fill="both", expand=True)
+        print("Created main frame for Table View tab")
+        
+        columns = self.controller.get_columns()
+        self.tree = ttk.Treeview(frame, columns=columns, show="headings", style="Treeview")
+        print("Created Treeview with columns:", columns)
+        
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=150)
+        
+        self.populate_treeview()
+        
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        print("Added scrollbars to Treeview")
+        
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        print("Laid out Treeview and scrollbars")
+        
+        save_button = ttk.Button(frame, text="Save", command=self.controller.save_data, style="TButton")
+        save_button.grid(row=2, column=0, pady=20)
+        print("Added Save button to Table View tab")
+        
+        self.tree.bind("<Button-1>", self.controller.on_table_click)
+
+    def populate_treeview(self):
+        """Populate the Treeview with data from the Model."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for idx, row in self.controller.get_data().iterrows():
+            self.tree.insert("", tk.END, values=list(row), iid=str(idx))
+        print(f"Inserted {len(self.controller.get_data())} rows into Treeview")
+
+    def update_treeview(self):
+        """Refresh the Treeview in the Table View with the latest data."""
+        print("Refreshing Table View")
+        self.populate_treeview()
+
+    def update_treeview_row(self, row_id, values):
+        """Update a specific row in the Treeview."""
+        self.tree.item(row_id, values=values)
+
+    def create_shelf_tab(self):
+        """Create the shelf view tab with 3D shelf visualization."""
+        frame = ttk.Frame(self.shelf_tab, style="Custom.TFrame")
+        frame.pack(padx=20, pady=20, fill="both", expand=True)
+        print("Created main frame for Shelf View tab")
+        
+        dropdown_frame = ttk.Frame(frame, style="Custom.TFrame")
+        dropdown_frame.pack(fill="x", pady=10)
+        print("Created dropdown frame for Shelf View tab")
+        
+        self.sections = self.controller.get_unique_values('Section')
+        self.aisles = self.controller.get_unique_values('Aisle')
+        self.sides = self.controller.get_unique_values('Side')
+        self.families = self.controller.get_families()
+        print(f"Sections: {self.sections}")
+        print(f"Aisles: {self.aisles}")
+        print(f"Sides: {self.sides}")
+        
+        # Section dropdown
+        ttk.Label(dropdown_frame, text="Section:", font=self.large_font).grid(row=0, column=0, padx=5)
+        self.section_var = tk.StringVar()
+        self.section_dropdown = ttk.Combobox(dropdown_frame, textvariable=self.section_var, values=self.sections, state="readonly", style="TCombobox")
+        self.section_dropdown.grid(row=0, column=1, padx=5)
+        self.section_dropdown.bind("<<ComboboxSelected>>", self.controller.on_section_changed)
+        print("Added Section dropdown")
+        
+        # Aisle dropdown
+        ttk.Label(dropdown_frame, text="Aisle:", font=self.large_font).grid(row=0, column=2, padx=5)
+        self.aisle_var = tk.StringVar()
+        self.aisle_dropdown = ttk.Combobox(dropdown_frame, textvariable=self.aisle_var, values=self.aisles, state="readonly", style="TCombobox")
+        self.aisle_dropdown.grid(row=0, column=3, padx=5)
+        self.aisle_dropdown.bind("<<ComboboxSelected>>", self.controller.on_aisle_changed)
+        print("Added Aisle dropdown")
+        
+        # Side dropdown
+        ttk.Label(dropdown_frame, text="Side:", font=self.large_font).grid(row=0, column=4, padx=5)
+        self.side_var = tk.StringVar()
+        self.side_dropdown = ttk.Combobox(dropdown_frame, textvariable=self.side_var, values=self.sides, state="readonly", style="TCombobox")
+        self.side_dropdown.grid(row=0, column=5, padx=5)
+        self.side_dropdown.bind("<<ComboboxSelected>>", self.controller.on_side_changed)
+        print("Added Side dropdown")
+        
+        # Family dropdown
+        ttk.Label(dropdown_frame, text="Family:", font=self.large_font).grid(row=0, column=6, padx=5)
+        self.family_var = tk.StringVar()
+        self.family_dropdown = ttk.Combobox(dropdown_frame, textvariable=self.family_var, values=self.families, state="readonly", style="TCombobox")
+        self.family_dropdown.grid(row=0, column=7, padx=5)
+        self.family_dropdown.bind("<<ComboboxSelected>>", self.controller.on_family_changed)
+        print("Added Family dropdown")
+        
+        # Category dropdown
+        ttk.Label(dropdown_frame, text="Category:", font=self.large_font).grid(row=0, column=8, padx=5)
+        self.category_var = tk.StringVar()
+        self.category_dropdown = ttk.Combobox(dropdown_frame, textvariable=self.category_var, state="readonly", style="TCombobox")
+        self.category_dropdown.grid(row=0, column=9, padx=5)
+        print("Added Category dropdown")
+        
+        # Create Canvas for 3D shelf visualization
+        self.canvas_frame = ttk.Frame(frame, style="Custom.TFrame")
+        self.canvas_frame.pack(fill="both", expand=True)
+        print("Created canvas frame for Shelf View tab")
+        
+        self.canvas = tk.Canvas(self.canvas_frame, bg="#ffffff")
+        self.canvas.pack(fill="both", expand=True)
+        print("Created canvas for 3D shelf visualization")
+        
+        # Bind mouse events for selection
+        self.canvas.bind("<Button-1>", self.controller.start_selection)
+        self.canvas.bind("<B1-Motion>", self.controller.update_selection)
+        self.canvas.bind("<ButtonRelease-1>", self.controller.end_selection)
+        print("Bound mouse events for selection on canvas")
+        
+        # Bind resize event to redraw the shelf
+        self.canvas.bind("<Configure>", self.controller.on_resize)
+        print("Bound resize event to canvas")
+        
+        # Variables for shelf sizing
+        self.initial_cell_width = None
+        self.initial_cell_height = None
+        self.initial_aspect_ratio = None
+        self.scale_factor = 1.0
+        
+        # Dictionary to store front face item IDs for each shelf
+        self.front_face_ids = {}
+        
+        # Color mapping for category bars (front, top, right faces)
+        self.category_colors = {}
+        self.color_list = [
+            "#87CEEB",  # SkyBlue
+            "#90EE90",  # LightGreen
+            "#F08080",  # LightCoral
+            "#FFFF99",  # LightYellow
+            "#FFB6C1",  # LightPink
+            "#E0FFFF",  # LightCyan
+            "#FFA07A",  # LightSalmon
+            "#D3D3D3",  # LightGray
+            "#98FB98",  # PaleGreen
+            "#FFDAB9"   # PeachPuff
+        ]
+        self.color_list_lighter = [
+            "#B0E0E6",  # Lighter SkyBlue
+            "#ADFF2F",  # Lighter LightGreen
+            "#FF4040",  # Lighter LightCoral
+            "#FFFFCC",  # Lighter LightYellow
+            "#FFC1CC",  # Lighter LightPink
+            "#EFFFFF",  # Lighter LightCyan
+            "#FFBB99",  # Lighter LightSalmon
+            "#E6E6E6",  # Lighter LightGray
+            "#BFFFBA",  # Lighter PaleGreen
+            "#FFE4C4"   # Lighter PeachPuff
+        ]
+        self.color_list_darker = [
+            "#5F9EA0",  # Darker SkyBlue
+            "#7FFF00",  # Darker LightGreen
+            "#CD5C5C",  # Darker LightCoral
+            "#EEE8AA",  # Darker LightYellow
+            "#FF9999",  # Darker LightPink
+            "#B0E0E6",  # Darker LightCyan
+            "#FF8C69",  # Darker LightSalmon
+            "#C0C0C0",  # Darker LightGray
+            "#90EE90",  # Darker PaleGreen
+            "#FFCC99"   # Darker PeachPuff
+        ]
+        
+        # Create Clear Selection button (centered)
+        button_frame = ttk.Frame(frame, style="Custom.TFrame")
+        button_frame.pack(pady=10)
+        
+        self.clear_button = ttk.Button(button_frame, text="Clear Values: Off", command=self.controller.toggle_clear_values_mode, style="TButton")
+        self.clear_button.grid(row=0, column=0, padx=5, columnspan=2)  # Center the button
+        print("Added Clear Selection button to Shelf View tab (centered)")
+        
+        # Do not set default values for Section, Aisle, and Side to allow them to start blank
+        if self.families:
+            self.family_var.set(self.families[0])
+            # Set the category dropdown based on the first family
+            categories = self.controller.model.categories.get(self.families[0], ["No Categories Available"])
+            self.update_category_dropdown(categories)
+        print("Initialized shelf view with dropdown values (Section, Aisle, Side left blank)")
+
+    def update_category_dropdown(self, categories):
+        """Update the Category dropdown with the given categories."""
+        self.category_dropdown['values'] = categories
+        self.category_var.set(categories[0] if categories else "")
+
+    def draw_shelf_view(self, filtered_df, section, aisle, side):
+        """Draw the 3D shelf visualization based on the filtered data."""
+        self.canvas.delete("all")
+        self.front_face_ids.clear()
+        
+        if filtered_df is None:
+            print("No data to draw shelf grid (Section, Aisle, or Side not determined)")
+            return
+        
+        max_level = filtered_df['Level'].max()
+        max_shelf = filtered_df['Shelf'].max()
+        self.max_level = int(max_level)
+        self.max_shelf = int(max_shelf)
+        print(f"Max Level: {self.max_level}, Max Shelf: {self.max_shelf}")
+        
+        # Calculate base cell size (before scaling)
+        canvas_width_base = 1000
+        canvas_height_base = 600
+        cell_width_base = canvas_width_base // self.max_shelf
+        cell_height_base = canvas_height_base // self.max_level
+        self.cell_width_base = min(cell_width_base, 60)
+        self.cell_height_base = min(cell_height_base, 80)
+        
+        # Calculate the initial aspect ratio (only once)
+        if self.initial_aspect_ratio is None:
+            self.initial_cell_width = self.cell_width_base
+            self.initial_cell_height = self.cell_height_base
+            self.initial_aspect_ratio = self.initial_cell_width / self.initial_cell_height
+            print(f"Initial aspect ratio: {self.initial_aspect_ratio}")
+        
+        # Apply the scale factor to maintain aspect ratio
+        self.cell_width = self.cell_width_base * self.scale_factor
+        self.cell_height = self.cell_height_base * self.scale_factor
+        
+        # Ensure the aspect ratio is maintained
+        current_aspect_ratio = self.cell_width / self.cell_height
+        if abs(current_aspect_ratio - self.initial_aspect_ratio) > 0.01:
+            self.cell_height = self.cell_width / self.initial_aspect_ratio
+            print(f"Adjusted cell height to maintain aspect ratio: cell_width={self.cell_width}, cell_height={self.cell_height}")
+        
+        # Scale the depth and fonts
+        self.depth = 10 * self.scale_factor
+        shelf_font_size = int(self.shelf_text_font_base * self.scale_factor)
+        label_font_size = int(self.label_font_base * self.scale_factor)
+        self.shelf_text_font = ('Helvetica', max(shelf_font_size, 6), 'bold')
+        self.label_font = ('Helvetica', max(label_font_size, 6))
+        print(f"Scaled sizes: cell_width={self.cell_width}, cell_height={self.cell_height}, depth={self.depth}, shelf_font_size={shelf_font_size}, label_font_size={label_font_size}")
+        
+        # Calculate the total size of the shelf grid (including space for labels)
+        label_space_left = 50 * self.scale_factor
+        label_space_top = 30 * self.scale_factor
+        total_width = self.max_shelf * self.cell_width + self.depth + label_space_left
+        total_height = self.max_level * self.cell_height + self.depth + label_space_top
+        
+        # Center the shelf grid in the canvas
+        self.canvas.update_idletasks()
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        offset_x = (canvas_width - total_width) // 2 + label_space_left
+        offset_y = (canvas_height - total_height) // 2 + label_space_top
+        print(f"Centering shelf grid: offset_x={offset_x}, offset_y={offset_y}")
+        
+        # Draw shelf labels (Shelf 1, Shelf 2, etc.) above the grid
+        for shelf in range(1, self.max_shelf + 1):
+            label_x = (shelf - 1) * self.cell_width + offset_x + self.cell_width / 2
+            label_y = offset_y - self.depth - 10 * self.scale_factor
+            self.canvas.create_text(
+                label_x, label_y,
+                text=f"S{shelf}",
+                font=self.label_font,
+                fill="black",
+                anchor="center"
+            )
+        
+        # Draw level labels (Level 1, Level 2, etc.) to the left of the grid
+        for level in range(1, self.max_level + 1):
+            display_row = self.max_level - level
+            label_y = display_row * self.cell_height + offset_y + self.cell_height / 2
+            label_x = offset_x - self.depth - 30 * self.scale_factor
+            self.canvas.create_text(
+                label_x, label_y,
+                text=f"L{level}",
+                font=self.label_font,
+                fill="black",
+                anchor="center"
+            )
+        
+        # Group categories by family and assign colors to ensure uniqueness within each family
+        self.category_colors.clear()
+        # First, get all unique Family-Category pairs in the filtered data
+        family_category_pairs = filtered_df[['Family', 'Category']].dropna().drop_duplicates()
+        # Group by Family to assign colors
+        for family in family_category_pairs['Family'].unique():
+            family_df = family_category_pairs[family_category_pairs['Family'] == family]
+            categories_in_family = family_df['Category'].tolist()
+            # Assign a unique color to each category within this family
+            for idx, category in enumerate(categories_in_family):
+                color_idx = idx % len(self.color_list)  # Cycle through colors within the family
+                key = f"{family}|{category}"
+                self.category_colors[key] = {
+                    'front': self.color_list[color_idx],
+                    'top': self.color_list_lighter[color_idx],
+                    'right': self.color_list_darker[color_idx]
+                }
+        print(f"Category color mapping: {self.category_colors}")
+        
+        # Draw the 3D shelves with Level 1 at the top
+        self.cell_coords = {}
+        for level in range(1, self.max_level + 1):
+            display_row = self.max_level - level
+            for shelf in range(1, self.max_shelf + 1):
+                x1 = (shelf - 1) * self.cell_width + offset_x
+                y1 = display_row * self.cell_height + offset_y
+                x2 = x1 + self.cell_width
+                y2 = y1 + self.cell_height
+                
+                x1_3d = x1 + self.depth
+                y1_3d = y1
+                x2_3d = x2 + self.depth
+                y2_3d = y2
+                
+                front_face_tag = f"front_face_{level}_{shelf}"
+                front_face_id = self.canvas.create_polygon(
+                    x1_3d, y1_3d,
+                    x2_3d, y1_3d,
+                    x2, y2,
+                    x1, y2,
+                    fill="#d3d3d3", outline="black",
+                    tags=front_face_tag
+                )
+                self.front_face_ids[(level, shelf)] = front_face_id
+                
+                self.canvas.create_polygon(
+                    x1_3d, y1_3d,
+                    x2_3d, y1_3d,
+                    x2_3d - self.depth, y1_3d - self.depth,
+                    x1_3d - self.depth, y1_3d - self.depth,
+                    fill="#f0f0f0", outline="black"
+                )
+                
+                self.canvas.create_polygon(
+                    x2_3d, y1_3d,
+                    x2_3d - self.depth, y1_3d - self.depth,
+                    x2 - self.depth, y2 - self.depth,
+                    x2, y2,
+                    fill="#c0c0c0", outline="black"
+                )
+                
+                self.cell_coords[(level, shelf)] = (x1, y1, x2, y2)
+                
+                # Use filtered_df to get the Family and Category for this shelf
+                mask = (
+                    (filtered_df['Level'] == level) &
+                    (filtered_df['Shelf'] == shelf)
+                )
+                row = filtered_df[mask]
+                if not row.empty:
+                    category = str(row.iloc[0]['Category'])
+                    family = str(row.iloc[0]['Family'])
+                    if pd.isna(category) or category == "" or category == "nan":
+                        continue
+                    
+                    # Get the colors for the horizontal bar using Family|Category key
+                    key = f"{family}|{category}"
+                    colors = self.category_colors.get(key, {
+                        'front': "gray",
+                        'top': "lightgray",
+                        'right': "darkgray"
+                    })
+                    bar_color_front = colors['front']
+                    bar_color_top = colors['top']
+                    bar_color_right = colors['right']
+                    
+                    # Calculate the dimensions of the horizontal bar
+                    bar_width = self.cell_width  # 100% of the shelf width
+                    bar_height = self.cell_height * 0.4  # 40% of the shelf height
+                    bar_x1 = x1_3d  # Span the full width of the shelf
+                    bar_x2 = x2_3d
+                    bar_y1 = (y1_3d + y2_3d) / 2 - bar_height / 2  # Center the bar vertically
+                    bar_y2 = bar_y1 + bar_height
+                    
+                    # Draw the 3D horizontal bar
+                    # Front face
+                    print(f"Drawing 3D horizontal bar for L{level} S{shelf} (Family: {family}, Category: {category}): x1={bar_x1}, x2={bar_x2}, y1={bar_y1}, y2={bar_y2}, front_color={bar_color_front}")
+                    self.canvas.create_polygon(
+                        bar_x1, bar_y1,
+                        bar_x2, bar_y1,
+                        bar_x2, bar_y2,
+                        bar_x1, bar_y2,
+                        fill=bar_color_front, outline=""
+                    )
+                    # Top face
+                    self.canvas.create_polygon(
+                        bar_x1, bar_y1,
+                        bar_x2, bar_y1,
+                        bar_x2 - self.depth, bar_y1 - self.depth,
+                        bar_x1 - self.depth, bar_y1 - self.depth,
+                        fill=bar_color_top, outline=""
+                    )
+                    # Right face
+                    self.canvas.create_polygon(
+                        bar_x2, bar_y1,
+                        bar_x2 - self.depth, bar_y1 - self.depth,
+                        bar_x2 - self.depth, bar_y2 - self.depth,
+                        bar_x2, bar_y2,
+                        fill=bar_color_right, outline=""
+                    )
+                    
+                    # Draw the Category text in black, centered on the shelf
+                    max_width = self.cell_width - 10
+                    font_size = max(shelf_font_size, 6)
+                    avg_char_width = font_size * 0.6
+                    max_chars_per_line = int(max_width / avg_char_width)
+                    
+                    words = category.split()
+                    lines = []
+                    current_line = []
+                    current_length = 0
+                    
+                    for word in words:
+                        word_length = len(word)
+                        if current_length + word_length + len(current_line) <= max_chars_per_line:
+                            current_line.append(word)
+                            current_length += word_length
+                        else:
+                            lines.append(" ".join(current_line))
+                            current_line = [word]
+                            current_length = word_length
+                    if current_line:
+                        lines.append(" ".join(current_line))
+                    
+                    num_lines = len(lines)
+                    line_spacing = font_size * 1.2
+                    total_text_height = num_lines * line_spacing
+                    start_y = (y1 + y2) / 2 - total_text_height / 2 + line_spacing / 2
+                    
+                    for idx, line in enumerate(lines):
+                        text_x = (x1 + x2) / 2 + self.depth / 2
+                        text_y = start_y + idx * line_spacing
+                        self.canvas.create_text(
+                            text_x, text_y,
+                            text=line,
+                            font=self.shelf_text_font,
+                            fill="black",  # Use black for all text
+                            anchor="center"
+                        )
+        print(f"Drew 3D shelf grid with {self.max_level} levels and {self.max_shelf} shelves")
+
+    def get_selection_coords(self):
+        """Return the coordinates of the shelves for selection."""
+        return self.cell_coords
+
+    def highlight_shelf(self, level, shelf, color):
+        """Highlight the front face of a shelf with the given color."""
+        front_face_tag = f"front_face_{level}_{shelf}"
+        self.canvas.itemconfig(front_face_tag, fill=color)
+        print(f"{'Highlighted' if color == 'lightblue' else 'Reset color for'} shelf (L{level}, S{shelf}) with tag {front_face_tag}")
+
+    def show_message(self, title, message):
+        """Display a message to the user, only for errors."""
+        print(f"Showing message box: Title='{title}', Message='{message}'")
+        if "Success" not in title:
+            messagebox.showwarning(title, message)
+
+class ShelfController:
+    def __init__(self, root):
+        print("Starting ShelfController initialization")
+        self.model = ShelfModel()
+        self.view = ShelfView(root, self)
+        self.selected_cells = set()
+        self.start_x = None
+        self.start_y = None
+        self.selection_rect = None
+        self.clear_values_mode = False  # Toggle for clearing values during selection
+        print("ShelfController initialization completed")
+
+    def get_columns(self):
+        return list(self.model.df.columns)
+
+    def get_data(self):
+        return self.model.df
+
+    def get_families(self):
+        return self.model.families
+
+    def get_unique_values(self, column):
+        return self.model.get_unique_values(column)
+
+    def save_data(self):
+        success, message = self.model.save_data()
+        # Only show message if there is an error during saving
+        if not success:
+            self.view.show_message("Warning", message)
+
+    def toggle_clear_values_mode(self):
+        """Toggle the clear values mode and update the button label."""
+        self.clear_values_mode = not self.clear_values_mode
+        if self.clear_values_mode:
+            self.view.clear_button.config(text="Clear Values: On")
+            print("Clear Values mode enabled")
+        else:
+            self.view.clear_button.config(text="Clear Values: Off")
+            print("Clear Values mode disabled")
+
+    def on_table_click(self, event):
+        region = self.view.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            print("Not a cell region, exiting")
+            return
+        
+        row_id = self.view.tree.identify_row(event.y)
+        column_id = self.view.tree.identify_column(event.x)
+        column_idx = int(column_id.replace("#", "")) - 1
+        column_name = self.model.df.columns[column_idx]
+        
+        if column_name not in ["Family", "Category"]:
+            print(f"Column {column_name} is not editable (Family or Category required)")
+            return
+        
+        bbox = self.view.tree.bbox(row_id, column_id)
+        if not bbox:
+            print("Bounding box is empty, cannot place dropdown")
+            return
+        
+        x, y, width, height = bbox
+        window_width = self.view.root.winfo_width()
+        max_width = window_width - x - 20
+        adjusted_width = min(width + 20, max_width)
+        if x + adjusted_width > window_width:
+            x = window_width - adjusted_width - 20
+        
+        dropdown = ttk.Combobox(self.view.tree, state="normal", style="TCombobox")
+        if column_name == "Family":
+            full_values = self.model.families
+            dropdown["values"] = full_values
+            current_value = str(self.model.df.at[int(row_id), "Family"])
+            if pd.isna(current_value) or current_value == "nan":
+                current_value = ""
+            if current_value in full_values:
+                dropdown.set(current_value)
+            else:
+                dropdown.set("")
+            print(f"Family dropdown created with values: {full_values}, current: {current_value}")
+        else:
+            family = str(self.model.df.at[int(row_id), "Family"])
+            if pd.isna(family) or family == "nan":
+                family = ""
+            full_values = self.model.categories.get(family, ["No Categories Available"])
+            dropdown["values"] = full_values
+            current_value = str(self.model.df.at[int(row_id), "Category"])
+            if pd.isna(current_value) or current_value == "nan":
+                current_value = ""
+            if current_value in dropdown["values"]:
+                dropdown.set(current_value)
+            else:
+                dropdown.set("")
+            print(f"Category dropdown created for family '{family}' with values: {dropdown['values']}, current: {current_value}")
+        
+        dropdown.place(x=x, y=y, width=adjusted_width, height=height)
+        dropdown.lift()
+        dropdown.focus_set()
+        
+        dropdown.bind("<KeyRelease>", lambda e: self.on_table_dropdown_key_release(e, dropdown, full_values))
+        dropdown.bind("<<ComboboxSelected>>", lambda e: self.on_table_dropdown_select(e, dropdown, row_id, column_name))
+        dropdown.bind("<FocusOut>", lambda e: self.on_table_dropdown_close(e, dropdown))
+        dropdown.bind("<Return>", lambda e: self.on_table_dropdown_select(e, dropdown, row_id, column_name))
+        self.view.dropdown = dropdown
+
+    def on_table_dropdown_key_release(self, event, dropdown, full_values):
+        if event.keysym in ["Up", "Down", "Return"]:
+            print(f"Arrow key or Enter pressed: {event.keysym}, skipping filter")
+            return
+        
+        typed_text = dropdown.get().strip().lower()
+        print(f"Key released, typed text: {typed_text}")
+        
+        if typed_text == "":
+            dropdown["values"] = full_values
+            print(f"Restored full values: {full_values}")
+        else:
+            filtered_values = [val for val in full_values if val.lower().startswith(typed_text)]
+            dropdown["values"] = filtered_values
+            print(f"Filtered values: {filtered_values}")
+        
+        self.view.root.after(100, lambda: dropdown.event_generate('<Down>'))
+        dropdown.focus_set()
+
+    def on_table_dropdown_select(self, event, dropdown, row_id, column_name):
+        print("Dropdown selection made")
+        selected_value = dropdown.get()
+        print(f"Selected value: {selected_value} for {column_name} in row {row_id}")
+        
+        values = self.model.update_cell(row_id, column_name, selected_value)
+        self.view.update_treeview_row(row_id, values)
+        
+        if column_name == "Family":
+            self.view.family_var.set(selected_value)
+            self.on_family_changed(None)
+        elif column_name == "Category":
+            self.view.category_var.set(selected_value)
+        
+        dropdown.destroy()
+        self.view.dropdown = None
+
+    def on_table_dropdown_close(self, event, dropdown):
+        print("Dropdown lost focus, closing")
+        dropdown.destroy()
+        self.view.dropdown = None
+
+    def on_section_changed(self, event):
+        self.update_shelf_view()
+
+    def on_aisle_changed(self, event):
+        self.update_shelf_view()
+
+    def on_side_changed(self, event):
+        self.update_shelf_view()
+
+    def on_family_changed(self, event):
+        family = self.view.family_var.get()
+        categories = self.model.categories.get(family, ["No Categories Available"])
+        self.view.update_category_dropdown(categories)
+        print(f"Updated Category dropdown for Family '{family}': {categories}")
+
+    def update_shelf_view(self, event=None):
+        section = self.view.section_var.get()
+        aisle = self.view.aisle_var.get()
+        side = self.view.side_var.get()
+        filtered_df = self.model.get_filtered_data(section, aisle, side)
+        print(f"Updating shelf view with filtered_df: {filtered_df.shape if filtered_df is not None else 'None'}")
+        self.view.draw_shelf_view(filtered_df, section, aisle, side)
+
+    def on_resize(self, event):
+        new_width = self.view.canvas.winfo_width()
+        new_height = self.view.canvas.winfo_height()
+        initial_width = 1000
+        initial_height = 600
+        scale_width = new_width / initial_width
+        scale_height = new_height / initial_height
+        self.view.scale_factor = min(scale_width, scale_height)
+        print(f"Window resized: new width={new_width}, new height={new_height}, scale_factor={self.view.scale_factor}")
+        self.update_shelf_view()
+
+    def start_selection(self, event):
+        self.start_x = self.view.canvas.canvasx(event.x)
+        self.start_y = self.view.canvas.canvasy(event.y)
+        self.selection_rect = self.view.canvas.create_rectangle(
+            self.start_x, self.start_y, self.start_x, self.start_y,
+            outline="blue", dash=(2, 2)
+        )
+        print(f"Started selection at ({self.start_x}, {self.start_y})")
+
+    def update_selection(self, event):
+        current_x = self.view.canvas.canvasx(event.x)
+        current_y = self.view.canvas.canvasy(event.y)
+        self.view.canvas.coords(self.selection_rect, self.start_x, self.start_y, current_x, current_y)
+        
+        self.selected_cells.clear()
+        for (level, shelf), (x1, y1, x2, y2) in self.view.get_selection_coords().items():
+            sel_x1, sel_y1, sel_x2, sel_y2 = self.view.canvas.coords(self.selection_rect)
+            if (min(sel_x1, sel_x2) <= x2 and max(sel_x1, sel_x2) >= x1 and
+                min(sel_y1, sel_y2) <= y2 and max(sel_y1, sel_y2) >= y1):
+                self.selected_cells.add((level, shelf))
+                self.view.highlight_shelf(level, shelf, "lightblue")
+            else:
+                self.view.highlight_shelf(level, shelf, "#d3d3d3")
+        print(f"Updated selection: {len(self.selected_cells)} cells selected")
+
+    def end_selection(self, event):
+        self.view.canvas.delete(self.selection_rect)
+        self.selection_rect = None
+        self.start_x = None
+        self.start_y = None
+        print(f"Ended selection with {len(self.selected_cells)} cells selected")
+        if self.selected_cells:
+            if self.clear_values_mode:
+                self.clear_selected_values()
+                # Toggle off after one use
+                self.clear_values_mode = False
+                self.view.clear_button.config(text="Clear Values: Off")
+                print("Clear Values mode disabled after clearing")
+            else:
+                self.apply_selection()
+
+    def clear_selected_values(self):
+        """Clear Family and Category values for the selected shelves."""
+        section = self.view.section_var.get()
+        aisle = self.view.aisle_var.get()
+        side = self.view.side_var.get()
+        
+        if not section or not aisle or not side:
+            self.view.show_message("Warning", "Please select Section, Aisle, and Side values.")
+            return
+        
+        updated_rows = 0
+        for level, shelf in self.selected_cells:
+            mask = (
+                (self.model.df['Section'] == section) &
+                (self.model.df['Aisle'] == int(aisle)) &
+                (self.model.df['Side'] == int(side)) &
+                (self.model.df['Level'] == level) &
+                (self.model.df['Shelf'] == shelf)
+            )
+            row_idx = self.model.df.index[mask]
+            if not row_idx.empty:
+                row_idx = row_idx[0]
+                self.model.df.at[row_idx, 'Family'] = ""
+                self.model.df.at[row_idx, 'Category'] = ""
+                updated_rows += 1
+                print(f"Cleared row {row_idx}: Family and Category set to empty")
+        
+        print(f"Cleared Family and Category for {updated_rows} shelves")
+        self.selected_cells.clear()
+        self.update_shelf_view()
+
+    def apply_selection(self):
+        section = self.view.section_var.get()
+        aisle = self.view.aisle_var.get()
+        side = self.view.side_var.get()
+        family = self.view.family_var.get()
+        category = self.view.category_var.get()
+        print(f"Applying selection with Section: {section}, Aisle: {aisle}, Side: {side}, Family: {family}, Category: {category}")
+        success, message = self.model.apply_selection(self.selected_cells, section, aisle, side, family, category)
+        # Only show message if there is an error
+        if not success:
+            self.view.show_message("Warning", message)
+        if success:
+            self.selected_cells.clear()
+            self.update_shelf_view()
+
+def main():
+    if not os.path.exists(FAMILY_FILE):
+        print(f"Family file not found: {FAMILY_FILE}")
+        return
+    if not os.path.exists(OUTPUT_FILE):
+        print(f"Output file not found: {OUTPUT_FILE}")
+        return
+    
+    root = tk.Tk()
+    try:
+        app = ShelfController(root)
+        print("ShelfController instance created")
+        # Do not call update_shelf_view here; let the user select dropdown values first
+        root.mainloop()
+    except Exception as e:
+        print(f"Failed to initialize application: {str(e)}")
+        root.destroy()
+
+if __name__ == "__main__":
+    main()
